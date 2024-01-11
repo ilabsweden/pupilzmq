@@ -38,9 +38,11 @@ async def runpub(address,topic):
         print(f"Getting status information from {device}")
         status = await device.get_status()
         sensor_gaze = status.direct_gaze_sensor()
-        sensor_eye = status.direct_eyes_sensor()
+        #sensor_eye = status.direct_eyes_sensor()
         
-        if not sensor_gaze.connected:
+        if sensor_gaze.connected:
+            print(f'Publishing events on {address}, topic: {topic.decode("utf8")}')
+        else:
             print(f"Gaze sensor is not connected to {device}")
             return
 
