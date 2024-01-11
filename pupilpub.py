@@ -21,11 +21,11 @@ from pupil_labs.realtime_api import (
 
 ctx = zmq.asyncio.Context()
 
-async def runpub(address):
+async def runpub(address,topic):
     pub = ctx.socket(zmq.PUB)
     pub.bind(address)
 
-    topic = b'pupil/gaze'
+    topic = topic.encode('utf8')
 
     async with Network() as network:
         dev_info = await network.wait_for_new_device(timeout_seconds=5)
@@ -49,11 +49,11 @@ async def runpub(address):
             #print(gaze_to_json(gaze,True))
             pub.send_multipart([topic, gaze_to_json(gaze)])
 
-async def runsub(address):
+async def runsub(address,topic):
     sub = ctx.socket(zmq.SUB)
     sub.connect(address)
 
-    topic = b''
+    topic = topic.encode('utf8')
     sub.setsockopt(zmq.SUBSCRIBE, topic)
 
     try:
@@ -77,15 +77,16 @@ def main():
                     prog='Pupil Labs ZMQ publisher',
                     description='Expose Pupil Labs invisible eye-gaze data on ZMQ pub socket',
                     epilog='See README.md for usage.')
-    parser.add_argument('address',help='specifies the interface:port onto which to bind',default='*:5555',nargs='?')
-    parser.add_argument('-s','--sub',action='store_true',help='executes a minimal reference subscriber that listens to published events from specified address')
+    parser.add_argument('address',help='specifies the interface:port',default='*:5555',nargs='?')
+    parser.add_argument('-t','--topic',help='the zmq topic on which events are published',default='pupil/gaze')
+    parser.add_argument('-s','--sub',action='store_true',help='executes a minimal reference subscriber that listens to published events from specified address and topic')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
         if args.sub:
-            asyncio.run(runsub('tcp://' + args.address.replace('*','localhost')))
+            asyncio.run(runsub('tcp://' + args.address.replace('*','localhost'),args.topic))
         else:
-            asyncio.run(runpub('tcp://' + args.address))
+            asyncio.run(runpub('tcp://' + args.address,args.topic))
 
 if __name__ == "__main__":
     main()
