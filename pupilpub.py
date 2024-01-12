@@ -4,7 +4,7 @@
 import asyncio
 import zmq, zmq.asyncio
 import json
-
+from datetime import datetime
 import contextlib
 import argparse, os
 
@@ -46,6 +46,19 @@ async def runpub(address,topic):
             #print(gaze_to_json(gaze,True))
             pub.send_multipart([topic, gaze_to_json(gaze)])
 
+async def rundummy(address,topic):
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(address)
+
+    topic = topic.encode('utf8')
+
+    print(f'Publishing dummy events on {address}, topic: {topic.decode("utf8")}')
+        
+    while True:
+        ts = datetime.now().timestamp()
+        pub.send_multipart([topic, gaze_to_json((1,2,True,ts))])
+        await asyncio.sleep(0.05)
+
 def gaze_to_json(gaze,encode='utf8'):
     g = {'x':gaze[0],'y':gaze[1],'worn':gaze[2],'timestamp':gaze[3]}
     if encode:
@@ -61,10 +74,14 @@ def main():
                     epilog='See README.md for usage.')
     parser.add_argument('address',help='specifies the interface:port to bind to',default='*:5555',nargs='?')
     parser.add_argument('-t','--topic',help='the zmq topic on which events are published',default='pupil/gaze')
+    parser.add_argument('--dummy',action='store_true',help='publisher streams dummy data without connecting to eye tracker')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(runpub('tcp://' + args.address,args.topic))
+        if args.dummy:
+            asyncio.run(rundummy('tcp://' + args.address,args.topic))
+        else:
+            asyncio.run(runpub('tcp://' + args.address,args.topic))
 
 if __name__ == "__main__":
     main()
