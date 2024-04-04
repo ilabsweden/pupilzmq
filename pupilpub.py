@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import contextlib
 import argparse, os
+import random
 
 from pupil_labs.realtime_api import (
     Device,
@@ -43,10 +44,9 @@ async def runpub(address,topic):
 
         restart_on_disconnect = True
         async for gaze in receive_gaze_data(sensor_gaze.url, run_loop=restart_on_disconnect):
-            #print(gaze_to_json(gaze,True))
             pub.send_multipart([topic, gaze_to_json(gaze)])
 
-async def rundummy(address,topic):
+async def rundomDummy(address,topic):
     pub = ctx.socket(zmq.PUB)
     pub.bind(address)
 
@@ -55,9 +55,33 @@ async def rundummy(address,topic):
     print(f'Publishing dummy events on {address}, topic: {topic.decode("utf8")}')
         
     while True:
-        ts = datetime.now().timestamp()
-        pub.send_multipart([topic, gaze_to_json((1,2,True,ts))])
-        await asyncio.sleep(0.05)
+        await send_dummy()
+
+async def squareDummy(address,topic):
+    sceneCamResolution = (1088,1080)
+    pub = ctx.socket(zmq.PUB)
+    pub.bind(address)
+
+    topic = topic.encode('utf8')
+
+    print(f'Publishing square dummy events on {address}, topic: {topic.decode("utf8")}')
+
+    while True:
+        x = 0
+        y = 0
+        for x in range(0,sceneCamResolution[0],10):
+            await send_dummy(pub,topic,x,y)
+        for y in range(0,sceneCamResolution[1],10):
+            await send_dummy(pub,topic,x,y)    
+        for x in range(sceneCamResolution[0],0,-10):
+            await send_dummy(pub,topic,x,y)
+        for y in range(sceneCamResolution[1],0,-10):
+            await send_dummy(pub,topic,x,y)
+
+async def send_dummy(pub,topic,x,y):
+    ts = datetime.now().timestamp()
+    pub.send_multipart([topic, gaze_to_json((x,y,True,ts))])
+    await asyncio.sleep(0.01)
 
 def gaze_to_json(gaze,encode='utf8'):
     g = {'x':gaze[0],'y':gaze[1],'worn':gaze[2],'timestamp':gaze[3]}
@@ -79,7 +103,7 @@ def main():
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
         if args.dummy:
-            asyncio.run(rundummy('tcp://' + args.address,args.topic))
+            asyncio.run(squareDummy('tcp://' + args.address,args.topic))
         else:
             asyncio.run(runpub('tcp://' + args.address,args.topic))
 
