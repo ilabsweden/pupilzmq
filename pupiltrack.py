@@ -36,12 +36,12 @@ def load_markers_config(config_file='markers.json'):
     marker_data = {}
     for marker in config['markers']:
         marker_id = marker['id']
-        size_mm = marker['size_mm']
-        pos_x = marker['position_mm']['x']
-        pos_y = marker['position_mm']['y']
+        size_mm = marker['size']
+        pos_x = marker['position']['x']
+        pos_y = marker['position']['y']
         
         # Define the 4 corners of the marker in 3D (Z=0, planar surface)
-        # Marker is centered at position_mm
+        # Marker is centered at position
         half_size = size_mm / 2.0
         obj_points = np.array([
             [pos_x - half_size, pos_y - half_size, 0],  # Top-left
@@ -55,9 +55,9 @@ def load_markers_config(config_file='markers.json'):
     # Define surface corners for drawing borders
     surface_corners_3d = np.array([
         [0, 0, 0],
-        [config['surface']['width_mm'], 0, 0],
-        [config['surface']['width_mm'], config['surface']['height_mm'], 0],
-        [0, config['surface']['height_mm'], 0]
+        [config['surface']['width'], 0, 0],
+        [config['surface']['width'], config['surface']['height'], 0],
+        [0, config['surface']['height'], 0]
     ], dtype=np.float32)
     
     return marker_data, surface_corners_3d, config
@@ -261,8 +261,8 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
                         gaze_surface_y = gaze_surface_3d[1]
                         
                         # Check if gaze is within surface bounds
-                        surface_width = markers_config['surface']['width_mm']
-                        surface_height = markers_config['surface']['height_mm']
+                        surface_width = markers_config['surface']['width']
+                        surface_height = markers_config['surface']['height']
                         
                         if 0 <= gaze_surface_x <= surface_width and 0 <= gaze_surface_y <= surface_height:
                             # Project surface gaze point back to image for visualization

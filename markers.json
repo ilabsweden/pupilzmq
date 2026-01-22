@@ -1,21 +1,21 @@
 {
   "surface": {
-    "width_mm": 500,
-    "height_mm": 500
+    "width": 500,
+    "height": 500
   },
   "markers": [
     {
       "id": 0,
-      "size_mm": 100,
-      "position_mm": {
+      "size": 100,
+      "position": {
         "x": 50,
         "y": 50
       }
     },
     {
       "id": 1,
-      "size_mm": 100,
-      "position_mm": {
+      "size": 100,
+      "position": {
         "x": 250,
         "y": 250
       }
