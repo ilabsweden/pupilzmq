@@ -65,7 +65,7 @@ def load_markers_config(config_file='markers.json'):
 # Load marker configuration at startup
 marker_3d_points, surface_corners_3d, markers_config = load_markers_config()
 
-async def runcam(record=None, record_video=None):
+async def runcam(record_video=None):
     
     async with Network() as network:
         dev_info = await network.wait_for_new_device(timeout_seconds=5)
@@ -108,7 +108,7 @@ async def runcam(record=None, record_video=None):
         )
 
         try:
-            await match_and_draw(queue_video, queue_gaze, await initFrameFolder(record), record_video)
+            await match_and_draw(queue_video, queue_gaze, record_video)
 
         finally:
             process_video.cancel()
@@ -123,22 +123,7 @@ async def enqueue_sensor_data(sensor: T.AsyncIterator, queue: asyncio.Queue) -> 
         except asyncio.QueueFull:
             print(f"Queue is full, dropping {datum}")
 
-async def initFrameFolder(record):
-    if not record: return
-
-    now = datetime.now()
-    dt_string = now.strftime("%Y-%m-%d_%H%M%S")
-    await aiofiles.os.makedirs(record, exist_ok=True)
-    frameFolder = os.path.join(record,dt_string)
-    await aiofiles.os.makedirs(frameFolder)
-    return frameFolder
-
-async def saveFrame(frameFolder, frame, index):
-    if index % 10 == 0:
-        cv2.imwrite(os.path.join(frameFolder,'Frame%d.png'%index),frame)
-
-async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None):
-    frameIndex = 0
+async def match_and_draw(queue_video, queue_gaze, record_video=None):
     video_writer = None
     
     # Initialize video writer if recording video
@@ -317,9 +302,6 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
                 if looked_at_marker == marker_id:
                     cv2.polylines(bgr_buffer, [corner.astype(int)], True, (255, 0, 255), 3)
 
-        if record:
-            asyncio.create_task(saveFrame(record,bgr_buffer.copy(),frameIndex))
-
         # Draw gaze point
         cv2.circle(
             bgr_buffer,
@@ -350,8 +332,6 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
         cv2.imshow("Scene camera with gaze overlay", bgr_buffer)
         if cv2.waitKey(1) & 0xFF == 27:
             break
-
-        frameIndex+=1
     
     # Release video writer when done
     if video_writer is not None:
@@ -396,12 +376,11 @@ def main():
                     prog='Pupil Labs camera',
                     description='Display Pupil Labs invisible video feed with eye-gaze',
                     epilog='See README.md for usage.')
-    parser.add_argument('--record', nargs='?', help='enables recording frames to specified output folder')
     parser.add_argument('-r', '--record-video', type=str, help='record displayed video to file (e.g., myrecording.mp4)')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(runcam(args.record, args.record_video))
+        asyncio.run(runcam(record_video=args.record_video))
 
 if __name__ == "__main__":
     main()

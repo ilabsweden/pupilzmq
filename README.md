@@ -17,15 +17,20 @@ python pupilcam.py
 ```
 
 **Options:**
-- `--record <folder>`: Save every 10th frame to the specified folder (frames saved as PNG files with timestamps)
+- `-r, --record-video <filename>`: Record the displayed video with gaze overlay to an MP4 file
 
-**Example:**
+**Examples:**
 ```bash
-python pupilcam.py --record ./recordings
+# Basic display
+python pupilcam.py
+
+# Record video
+python pupilcam.py -r recording.mp4
 ```
 
 **Controls:**
 - Press `ESC` to exit
+- Click window close button (X) to exit
 
 **What it shows:**
 - Live scene camera feed from Pupil Labs glasses
@@ -52,7 +57,6 @@ python pupiltrack.py
 ```
 
 **Options:**
-- `--record <folder>`: Save every 10th frame to the specified folder
 - `-r, --record-video <filename>`: Record the displayed video with all overlays to an MP4 file
 
 **Examples:**
@@ -62,9 +66,6 @@ python pupiltrack.py
 
 # Record video to file
 python pupiltrack.py -r myrecording.mp4
-
-# Save frames and record video
-python pupiltrack.py --record ./frames -r output.mp4
 ```
 
 **Controls:**

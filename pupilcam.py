@@ -17,7 +17,7 @@ from pupil_labs.realtime_api import (
     receive_video_frames,
 )
 
-async def runcam(record=None):
+async def runcam(record_video=None):
     
     async with Network() as network:
         dev_info = await network.wait_for_new_device(timeout_seconds=5)
@@ -60,7 +60,7 @@ async def runcam(record=None):
         )
 
         try:
-            await match_and_draw(queue_video, queue_gaze, await initFrameFolder(record))
+            await match_and_draw(queue_video, queue_gaze, record_video)
 
         finally:
             process_video.cancel()
@@ -75,30 +75,30 @@ async def enqueue_sensor_data(sensor: T.AsyncIterator, queue: asyncio.Queue) -> 
         except asyncio.QueueFull:
             print(f"Queue is full, dropping {datum}")
 
-async def initFrameFolder(record):
-    if not record: return
-
-    now = datetime.now()
-    dt_string = now.strftime("%Y-%m-%d_%H%M%S")
-    await aiofiles.os.makedirs(record, exist_ok=True)
-    frameFolder = os.path.join(record,dt_string)
-    await aiofiles.os.makedirs(frameFolder)
-    return frameFolder
-
-async def saveFrame(frameFolder, frame, index):
-    if index % 10 == 0:
-        cv2.imwrite(os.path.join(frameFolder,'Frame%d.png'%index),frame)
-
-async def match_and_draw(queue_video, queue_gaze,record=None):
-    frameIndex = 0
+async def match_and_draw(queue_video, queue_gaze, record_video=None):
+    window_name = "Scene camera with gaze overlay"
+    video_writer = None
+    
+    # Create window with proper flags to enable close button
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Initialize video writer if recording video
+    if record_video:
+        # Will set up video writer after getting first frame to determine dimensions
+        video_writer_initialized = False
 
     while True:
         video_datetime, video_frame = await get_most_recent_item(queue_video)
         _, gaze_datum = await get_closest_item(queue_gaze, video_datetime)
         bgr_buffer = video_frame.to_ndarray(format="bgr24")
-
-        if record:
-            asyncio.create_task(saveFrame(record,bgr_buffer.copy(),frameIndex))
+        
+        # Initialize video writer on first frame
+        if record_video and not video_writer_initialized:
+            height, width = bgr_buffer.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(record_video, fourcc, 30.0, (width, height))
+            video_writer_initialized = True
+            print(f"Recording video to {record_video}")
 
         cv2.circle(
             bgr_buffer,
@@ -107,12 +107,23 @@ async def match_and_draw(queue_video, queue_gaze,record=None):
             color=(0, 0, 255),
             thickness=15,
         )
+        
+        # Write frame to video file if recording
+        if video_writer is not None:
+            video_writer.write(bgr_buffer)
 
-        cv2.imshow("Scene camera with gaze overlay", bgr_buffer)
+        cv2.imshow(window_name, bgr_buffer)
+        
+        # Break on ESC key or window close (X button)
         if cv2.waitKey(1) & 0xFF == 27:
             break
-
-        frameIndex+=1
+        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
+    
+    # Release video writer when done
+    if video_writer is not None:
+        video_writer.release()
+        print(f"Video saved to {record_video}")
 
 async def get_most_recent_item(queue):
 
@@ -152,11 +163,11 @@ def main():
                     prog='Pupil Labs camera',
                     description='Display Pupil Labs invisible video feed with eye-gaze',
                     epilog='See README.md for usage.')
-    parser.add_argument('--record', nargs='?', help='enables recording to specified output folder')
+    parser.add_argument('-r', '--record-video', type=str, help='record displayed video to file (e.g., myrecording.mp4)')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(runcam(args.record))
+        asyncio.run(runcam(record_video=args.record_video))
 
 if __name__ == "__main__":
     main()
