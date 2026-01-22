@@ -1,19 +1,13 @@
-"""Generate A0 landscape poster with ArUco markers"""
+"""Generate poster with ArUco markers from JSON specification"""
 
 import cv2
 import numpy as np
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from reportlab.lib.pagesizes import A0, landscape
-import io
-from PIL import Image
-
-# A0 landscape dimensions in mm
-A0_WIDTH_MM = 1189
-A0_HEIGHT_MM = 841
-
-# Marker size in mm
-MARKER_SIZE_MM = 50
+import json
+import argparse
+import os
+import sys
 
 # ArUco dictionary
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
@@ -23,48 +17,43 @@ def generate_aruco_marker(marker_id, size_pixels=200):
     marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, size_pixels)
     return marker_img
 
-def create_poster():
-    """Create A0 poster with 8 ArUco markers"""
+def load_marker_config(json_file):
+    """Load marker configuration from JSON file"""
+    with open(json_file, 'r') as f:
+        config = json.load(f)
+    return config
+
+def create_poster(config_file):
+    """Create poster with ArUco markers from JSON configuration"""
     
-    # Create PDF with A0 landscape
-    pdf_filename = "aruco_poster_a0.pdf"
-    c = canvas.Canvas(pdf_filename, pagesize=landscape(A0))
-    width_pts, height_pts = landscape(A0)
+    # Load configuration
+    config = load_marker_config(config_file)
     
-    # Convert to mm for easier calculation
-    width_mm = A0_WIDTH_MM
-    height_mm = A0_HEIGHT_MM
+    # Get surface dimensions
+    width_mm = config['surface']['width']
+    height_mm = config['surface']['height']
+    markers = config['markers']
     
-    # Marker positions (center of each marker in mm)
-    # 3 markers along top edge
-    top_y = 100  # Distance from top edge
-    top_positions = [
-        (width_mm * 0.25, height_mm - top_y),  # Left-top
-        (width_mm * 0.5, height_mm - top_y),   # Center-top
-        (width_mm * 0.75, height_mm - top_y)   # Right-top
-    ]
+    # Create output filename based on input filename
+    base_name = os.path.splitext(config_file)[0]
+    pdf_filename = f"{base_name}.pdf"
     
-    # 3 markers along bottom edge
-    bottom_y = 100  # Distance from bottom edge
-    bottom_positions = [
-        (width_mm * 0.25, bottom_y),  # Left-bottom
-        (width_mm * 0.5, bottom_y),   # Center-bottom
-        (width_mm * 0.75, bottom_y)   # Right-bottom
-    ]
+    # Create PDF with custom size
+    # ReportLab uses points (1/72 inch), convert mm to points
+    width_pts = width_mm * mm
+    height_pts = height_mm * mm
     
-    # 2 markers centrally placed (left and right halves)
-    center_y = height_mm / 2
-    center_positions = [
-        (width_mm * 0.25, center_y),  # Left-center
-        (width_mm * 0.75, center_y)   # Right-center
-    ]
+    c = canvas.Canvas(pdf_filename, pagesize=(width_pts, height_pts))
     
-    # Combine all positions (8 markers total, IDs 1-8)
-    all_positions = top_positions + center_positions + bottom_positions
+    # Keep track of temporary files for cleanup
+    temp_files = []
     
     # Generate and place markers
-    for i, (x_mm, y_mm) in enumerate(all_positions):
-        marker_id = i + 1
+    for marker in markers:
+        marker_id = marker['id']
+        marker_size_mm = marker['size']
+        x_mm = marker['position']['x']
+        y_mm = marker['position']['y']
         
         # Generate marker image (higher resolution for better quality)
         marker_img = generate_aruco_marker(marker_id, size_pixels=400)
@@ -72,11 +61,13 @@ def create_poster():
         # Save to temporary file
         temp_filename = f"temp_marker_{marker_id}.png"
         cv2.imwrite(temp_filename, marker_img)
+        temp_files.append(temp_filename)
         
         # Calculate position (bottom-left corner of marker)
-        x_pts = (x_mm - MARKER_SIZE_MM / 2) * mm
-        y_pts = (y_mm - MARKER_SIZE_MM / 2) * mm
-        size_pts = MARKER_SIZE_MM * mm
+        # JSON position is center of marker
+        x_pts = (x_mm - marker_size_mm / 2) * mm
+        y_pts = (y_mm - marker_size_mm / 2) * mm
+        size_pts = marker_size_mm * mm
         
         # Draw marker on PDF
         c.drawImage(temp_filename, x_pts, y_pts, width=size_pts, height=size_pts)
@@ -90,19 +81,29 @@ def create_poster():
     c.save()
     
     # Clean up temporary files
-    import os
-    for i in range(1, 9):
-        temp_file = f"temp_marker_{i}.png"
+    for temp_file in temp_files:
         if os.path.exists(temp_file):
             os.remove(temp_file)
     
     print(f"Poster saved to {pdf_filename}")
-    print(f"Size: A0 landscape ({A0_WIDTH_MM}mm × {A0_HEIGHT_MM}mm)")
-    print(f"Markers: 8 (IDs 1-8), each {MARKER_SIZE_MM}mm × {MARKER_SIZE_MM}mm")
-    print("\nMarker layout:")
-    print("  Top edge: 3 markers (IDs 1, 2, 3)")
-    print("  Center: 2 markers (IDs 4, 5)")
-    print("  Bottom edge: 3 markers (IDs 6, 7, 8)")
+    print(f"Size: {width_mm}mm × {height_mm}mm")
+    print(f"Markers: {len(markers)} total")
+    for marker in markers:
+        print(f"  ID {marker['id']}: {marker['size']}mm at ({marker['position']['x']}, {marker['position']['y']})")
 
 if __name__ == "__main__":
-    create_poster()
+    parser = argparse.ArgumentParser(
+        description='Generate PDF poster with ArUco markers from JSON configuration'
+    )
+    parser.add_argument(
+        'config_file',
+        help='JSON file containing marker configuration (e.g., markers_a0.json)'
+    )
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.config_file):
+        print(f"Error: Configuration file '{args.config_file}' not found")
+        sys.exit(1)
+    
+    create_poster(args.config_file)
