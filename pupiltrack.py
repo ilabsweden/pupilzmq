@@ -10,6 +10,7 @@ import cv2
 import argparse, os
 from datetime import datetime
 import numpy as np
+import json
 
 from pupil_labs.realtime_api import (
     Device,
@@ -24,6 +25,45 @@ from pupil_labs.realtime_api import (
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
 aruco_params = cv2.aruco.DetectorParameters()
 aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
+
+def load_markers_config(config_file='markers.json'):
+    """Load marker configuration from JSON file"""
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    # Build 3D object points for each marker in the surface coordinate system
+    # Origin is top-left corner of surface, Y axis points down, X axis points right
+    marker_data = {}
+    for marker in config['markers']:
+        marker_id = marker['id']
+        size_mm = marker['size_mm']
+        pos_x = marker['position_mm']['x']
+        pos_y = marker['position_mm']['y']
+        
+        # Define the 4 corners of the marker in 3D (Z=0, planar surface)
+        # Marker is centered at position_mm
+        half_size = size_mm / 2.0
+        obj_points = np.array([
+            [pos_x - half_size, pos_y - half_size, 0],  # Top-left
+            [pos_x + half_size, pos_y - half_size, 0],  # Top-right
+            [pos_x + half_size, pos_y + half_size, 0],  # Bottom-right
+            [pos_x - half_size, pos_y + half_size, 0]   # Bottom-left
+        ], dtype=np.float32)
+        
+        marker_data[marker_id] = obj_points
+    
+    # Define surface corners for drawing borders
+    surface_corners_3d = np.array([
+        [0, 0, 0],
+        [config['surface']['width_mm'], 0, 0],
+        [config['surface']['width_mm'], config['surface']['height_mm'], 0],
+        [0, config['surface']['height_mm'], 0]
+    ], dtype=np.float32)
+    
+    return marker_data, surface_corners_3d, config
+
+# Load marker configuration at startup
+marker_3d_points, surface_corners_3d, markers_config = load_markers_config()
 
 async def runcam(record=None, record_video=None):
     
@@ -127,6 +167,64 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
         gaze_point = (int(gaze_datum.x), int(gaze_datum.y))
         looked_at_marker = None
         
+        # Estimate surface pose if markers are detected
+        surface_detected = False
+        if ids is not None:
+            # Collect 3D-2D point correspondences for markers defined in config
+            obj_points_list = []
+            img_points_list = []
+            
+            for i, marker_id in enumerate(ids.flatten()):
+                if marker_id in marker_3d_points:
+                    obj_points_list.append(marker_3d_points[marker_id])
+                    img_points_list.append(corners[i][0])
+            
+            # Need at least one marker to estimate pose
+            if len(obj_points_list) > 0:
+                obj_points = np.vstack(obj_points_list)
+                img_points = np.vstack(img_points_list)
+                
+                # Camera model for Pupil Labs Invisible scene camera
+                # Wide-angle camera with significant distortion
+                height, width = bgr_buffer.shape[:2]
+                
+                # Reduced focal length for wider FOV (empirically calibrated)
+                # If surface appears 2x too large, halve the focal length
+                focal_length = width * 0.577  # Adjusted for ~120° FOV
+                
+                camera_matrix = np.array([
+                    [focal_length, 0, width / 2],
+                    [0, focal_length, height / 2],
+                    [0, 0, 1]
+                ], dtype=np.float32)
+                
+                # Add radial distortion coefficients for wide-angle lens
+                # k1 (barrel distortion), k2, p1, p2 (tangential), k3
+                # Negative k1 for typical wide-angle barrel distortion
+                dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
+                
+                # Solve PnP to get rotation and translation vectors
+                success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+                
+                if success:
+                    surface_detected = True
+                    
+                    # Project surface corners to image
+                    surface_corners_2d, _ = cv2.projectPoints(
+                        surface_corners_3d, rvec, tvec, camera_matrix, dist_coeffs
+                    )
+                    surface_corners_2d = surface_corners_2d.reshape(-1, 2).astype(int)
+                    
+                    # Draw surface border
+                    cv2.polylines(bgr_buffer, [surface_corners_2d], True, (0, 255, 255), 3)
+                    
+                    # Add corner labels
+                    corner_labels = ['TL', 'TR', 'BR', 'BL']
+                    for j, (corner, label) in enumerate(zip(surface_corners_2d, corner_labels)):
+                        cv2.circle(bgr_buffer, tuple(corner), 8, (0, 255, 255), -1)
+                        cv2.putText(bgr_buffer, label, tuple(corner + np.array([10, -10])),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        
         # Draw detected markers and check gaze
         if ids is not None:
             cv2.aruco.drawDetectedMarkers(bgr_buffer, corners, ids)
@@ -170,6 +268,11 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
         
         # Display which marker is being looked at
         status_text = f"Looking at: Marker {looked_at_marker}" if looked_at_marker is not None else "Looking at: None"
+        if surface_detected:
+            status_text += " | Surface: Detected"
+        else:
+            status_text += " | Surface: Not detected"
+        
         cv2.putText(bgr_buffer, status_text, 
                    (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
