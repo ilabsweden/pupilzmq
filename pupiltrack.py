@@ -224,6 +224,69 @@ async def match_and_draw(queue_video, queue_gaze, record=None, record_video=None
                         cv2.circle(bgr_buffer, tuple(corner), 8, (0, 255, 255), -1)
                         cv2.putText(bgr_buffer, label, tuple(corner + np.array([10, -10])),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                    
+                    # Project gaze point onto surface
+                    # Convert rotation vector to matrix
+                    R, _ = cv2.Rodrigues(rvec)
+                    
+                    # Undistort gaze point
+                    gaze_undistorted = cv2.undistortPoints(
+                        np.array([[gaze_point]], dtype=np.float32),
+                        camera_matrix, dist_coeffs, P=camera_matrix
+                    )[0][0]
+                    
+                    # Create ray in camera coordinates (normalized)
+                    ray_cam = np.array([
+                        (gaze_undistorted[0] - camera_matrix[0, 2]) / camera_matrix[0, 0],
+                        (gaze_undistorted[1] - camera_matrix[1, 2]) / camera_matrix[1, 1],
+                        1.0
+                    ])
+                    
+                    # Transform ray to surface coordinate system
+                    # Surface normal is [0, 0, 1] (pointing up)
+                    # Plane equation: Z = 0
+                    # Ray: P = tvec + t * R^T * ray_cam
+                    # Find t where Z = 0
+                    
+                    ray_surface = R.T @ ray_cam
+                    cam_pos_surface = -R.T @ tvec.flatten()
+                    
+                    # Solve: cam_pos_surface[2] + t * ray_surface[2] = 0
+                    if abs(ray_surface[2]) > 0.001:  # Check ray isn't parallel to surface
+                        t = -cam_pos_surface[2] / ray_surface[2]
+                        
+                        # Calculate intersection point
+                        gaze_surface_3d = cam_pos_surface + t * ray_surface
+                        gaze_surface_x = gaze_surface_3d[0]
+                        gaze_surface_y = gaze_surface_3d[1]
+                        
+                        # Check if gaze is within surface bounds
+                        surface_width = markers_config['surface']['width_mm']
+                        surface_height = markers_config['surface']['height_mm']
+                        
+                        if 0 <= gaze_surface_x <= surface_width and 0 <= gaze_surface_y <= surface_height:
+                            # Project surface gaze point back to image for visualization
+                            gaze_on_surface_3d = np.array([[gaze_surface_x, gaze_surface_y, 0]], dtype=np.float32)
+                            gaze_on_surface_2d, _ = cv2.projectPoints(
+                                gaze_on_surface_3d, rvec, tvec, camera_matrix, dist_coeffs
+                            )
+                            gaze_surface_img = gaze_on_surface_2d[0][0].astype(int)
+                            
+                            # Draw gaze point on surface with crosshair
+                            cv2.drawMarker(bgr_buffer, tuple(gaze_surface_img), (255, 255, 0), 
+                                         cv2.MARKER_CROSS, 40, 3)
+                            
+                            # Display surface coordinates
+                            coord_text = f"Surface: ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
+                            cv2.putText(bgr_buffer, coord_text,
+                                       (10, 70),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+                        else:
+                            # Gaze is outside surface
+                            coord_text = f"Surface: Outside ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
+                            cv2.putText(bgr_buffer, coord_text,
+                                       (10, 70),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (128, 128, 128), 2)
         
         # Draw detected markers and check gaze
         if ids is not None:
