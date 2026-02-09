@@ -26,7 +26,7 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
 aruco_params = cv2.aruco.DetectorParameters()
 aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
 
-def load_markers_config(config_file='markers.json'):
+def load_markers_config(config_file='markers_a0.json'):
     """Load marker configuration from JSON file"""
     with open(config_file, 'r') as f:
         config = json.load(f)

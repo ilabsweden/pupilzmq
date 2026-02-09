@@ -23,6 +23,25 @@ def load_marker_config(json_file):
         config = json.load(f)
     return config
 
+def draw_grid(c, width_mm, height_mm):
+    """Draw a light gray grid with 1cm resolution"""
+    # Set grid color to light gray
+    c.setStrokeColorRGB(0.85, 0.85, 0.85)
+    c.setLineWidth(0.5)
+    
+    # Draw vertical lines every 10mm (1cm)
+    for x_mm in range(0, int(width_mm) + 1, 10):
+        x_pts = x_mm * mm
+        c.line(x_pts, 0, x_pts, height_mm * mm)
+    
+    # Draw horizontal lines every 10mm (1cm)
+    for y_mm in range(0, int(height_mm) + 1, 10):
+        y_pts = y_mm * mm
+        c.line(0, y_pts, width_mm * mm, y_pts)
+    
+    # Reset stroke color to black for subsequent drawing
+    c.setStrokeColorRGB(0, 0, 0)
+
 def create_poster(config_file):
     """Create poster with ArUco markers from JSON configuration"""
     
@@ -44,6 +63,9 @@ def create_poster(config_file):
     height_pts = height_mm * mm
     
     c = canvas.Canvas(pdf_filename, pagesize=(width_pts, height_pts))
+    
+    # Draw grid pattern
+    draw_grid(c, width_mm, height_mm)
     
     # Keep track of temporary files for cleanup
     temp_files = []
