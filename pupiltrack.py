@@ -26,6 +26,53 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
 aruco_params = cv2.aruco.DetectorParameters()
 aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, aruco_params)
 
+
+def normalize_marker_ids(ids):
+    """Return marker IDs as a flat 1D list for OpenCV 4.x variations."""
+    if ids is None:
+        return []
+
+    ids_array = np.asarray(ids)
+    if ids_array.size == 0:
+        return []
+
+    return ids_array.reshape(-1).astype(int).tolist()
+
+
+# cv::Point coordinates are a 32-bit C++ int; an ill-conditioned solvePnP pose
+# (e.g. a single marker seen at a grazing angle) can project points far
+# outside the image, even to NaN/inf. Clamp well within the int32 range so
+# such points still draw (harmlessly off-screen) instead of making OpenCV
+# 5's stricter bindings raise a Bad argument error.
+_MAX_POINT_COORD = 1_000_000
+
+
+def to_opencv_point(point):
+    """Convert a point-like array to a plain (x, y) tuple for OpenCV.
+
+    OpenCV 5 is stricter about shape validation, and point arrays can arrive as
+    (x, y), (1, 2), (2, 1), or nested lists. Flattening and coercing to int
+    keeps all callers compatible.
+    """
+    coords = np.asarray(point, dtype=np.float64).reshape(-1)
+    if coords.size < 2:
+        raise ValueError(f"Expected at least two coordinates, got {point!r}")
+
+    coords = np.clip(np.nan_to_num(coords), -_MAX_POINT_COORD, _MAX_POINT_COORD)
+    return (int(coords[0]), int(coords[1]))
+
+
+def project_to_int_points(points):
+    """Cast projected points to int, clamping non-finite or out-of-range values.
+
+    See to_opencv_point for why: an unstable solvePnP pose can make
+    projectPoints return NaN/inf, or finite values too large for cv::Point's
+    32-bit range.
+    """
+    clamped = np.clip(np.nan_to_num(points), -_MAX_POINT_COORD, _MAX_POINT_COORD)
+    return clamped.astype(int)
+
+
 def load_markers_config(config_file='markers_a0.json'):
     """Load marker configuration from JSON file"""
     with open(config_file, 'r') as f:
@@ -198,7 +245,7 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
                     surface_corners_2d, _ = cv2.projectPoints(
                         surface_corners_3d, rvec, tvec, camera_matrix, dist_coeffs
                     )
-                    surface_corners_2d = surface_corners_2d.reshape(-1, 2).astype(int)
+                    surface_corners_2d = project_to_int_points(surface_corners_2d.reshape(-1, 2))
                     
                     # Draw surface border
                     cv2.polylines(bgr_buffer, [surface_corners_2d], True, (0, 255, 255), 3)
@@ -206,8 +253,8 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
                     # Add corner labels
                     corner_labels = ['TL', 'TR', 'BR', 'BL']
                     for j, (corner, label) in enumerate(zip(surface_corners_2d, corner_labels)):
-                        cv2.circle(bgr_buffer, tuple(corner), 8, (0, 255, 255), -1)
-                        cv2.putText(bgr_buffer, label, tuple(corner + np.array([10, -10])),
+                        cv2.circle(bgr_buffer, to_opencv_point(corner), 8, (0, 255, 255), -1)
+                        cv2.putText(bgr_buffer, label, to_opencv_point(corner + np.array([10, -10])),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                     
                     # Project gaze point onto surface
@@ -255,10 +302,10 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
                             gaze_on_surface_2d, _ = cv2.projectPoints(
                                 gaze_on_surface_3d, rvec, tvec, camera_matrix, dist_coeffs
                             )
-                            gaze_surface_img = gaze_on_surface_2d[0][0].astype(int)
-                            
+                            gaze_surface_img = project_to_int_points(gaze_on_surface_2d[0][0])
+
                             # Draw gaze point on surface with crosshair
-                            cv2.drawMarker(bgr_buffer, tuple(gaze_surface_img), (255, 255, 0), 
+                            cv2.drawMarker(bgr_buffer, to_opencv_point(gaze_surface_img), (255, 255, 0),
                                          cv2.MARKER_CROSS, 40, 3)
                             
                             # Display surface coordinates
@@ -275,29 +322,30 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
         
         # Draw detected markers and check gaze
         if ids is not None:
+            marker_ids = normalize_marker_ids(ids)
             cv2.aruco.drawDetectedMarkers(bgr_buffer, corners, ids)
-            
+
             # Check which marker is being looked at
             for i, corner in enumerate(corners):
-                marker_id = ids[i][0]
-                
+                marker_id = marker_ids[i]
+
                 # Check if gaze point is inside this marker
                 result = cv2.pointPolygonTest(corner[0], gaze_point, False)
                 if result >= 0:  # Point is inside or on the marker
                     looked_at_marker = marker_id
-                
+
                 # Calculate center of marker
-                center = corner[0].mean(axis=0).astype(int)
-                
+                center = corner[0].mean(axis=0).astype(np.float64)
+
                 # Draw center point
                 color = (255, 0, 255) if looked_at_marker == marker_id else (0, 255, 0)
-                cv2.circle(bgr_buffer, tuple(center), 5, color, -1)
-                
+                cv2.circle(bgr_buffer, to_opencv_point(center), 5, color, -1)
+
                 # Add ID label
-                cv2.putText(bgr_buffer, f"ID:{marker_id}", 
-                           (center[0] + 10, center[1] - 10),
+                cv2.putText(bgr_buffer, f"ID:{marker_id}",
+                           (to_opencv_point(center)[0] + 10, to_opencv_point(center)[1] - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                
+
                 # Highlight looked-at marker with thicker border
                 if looked_at_marker == marker_id:
                     cv2.polylines(bgr_buffer, [corner.astype(int)], True, (255, 0, 255), 3)
