@@ -74,43 +74,58 @@ def project_to_int_points(points):
 
 
 def load_markers_config(config_file='markers_a0.json'):
-    """Load marker configuration from JSON file"""
+    """Load one or more named surface configurations from a JSON file.
+
+    Each top-level key is a surface name; its value defines the surface's
+    size and the ArUco markers placed on it, e.g.:
+        {"A0": {"width": 1189, "height": 841, "markers": [...]}}
+    """
     with open(config_file, 'r') as f:
         config = json.load(f)
-    
-    # Build 3D object points for each marker in the surface coordinate system
-    # Origin is top-left corner of surface, Y axis points down, X axis points right
-    marker_data = {}
-    for marker in config['markers']:
-        marker_id = marker['id']
-        size_mm = marker['size']
-        pos_x = marker['position']['x']
-        pos_y = marker['position']['y']
-        
-        # Define the 4 corners of the marker in 3D (Z=0, planar surface)
-        # Marker is centered at position
-        half_size = size_mm / 2.0
-        obj_points = np.array([
-            [pos_x - half_size, pos_y - half_size, 0],  # Top-left
-            [pos_x + half_size, pos_y - half_size, 0],  # Top-right
-            [pos_x + half_size, pos_y + half_size, 0],  # Bottom-right
-            [pos_x - half_size, pos_y + half_size, 0]   # Bottom-left
-        ], dtype=np.float32)
-        
-        marker_data[marker_id] = obj_points
-    
-    # Define surface corners for drawing borders
-    surface_corners_3d = np.array([
-        [0, 0, 0],
-        [config['surface']['width'], 0, 0],
-        [config['surface']['width'], config['surface']['height'], 0],
-        [0, config['surface']['height'], 0]
-    ], dtype=np.float32)
-    
-    return marker_data, surface_corners_3d, config
 
-# Load marker configuration at startup
-marker_3d_points, surface_corners_3d, markers_config = load_markers_config()
+    surfaces = {}
+    for surface_name, surface in config.items():
+        width_mm = surface['width']
+        height_mm = surface['height']
+
+        # Build 3D object points for each marker in the surface coordinate system
+        # Origin is top-left corner of surface, Y axis points down, X axis points right
+        marker_3d_points = {}
+        for marker in surface['markers']:
+            marker_id = marker['id']
+            size_mm = marker['size']
+            pos_x = marker['position']['x']
+            pos_y = marker['position']['y']
+
+            # Define the 4 corners of the marker in 3D (Z=0, planar surface)
+            # Marker is centered at position
+            half_size = size_mm / 2.0
+            marker_3d_points[marker_id] = np.array([
+                [pos_x - half_size, pos_y - half_size, 0],  # Top-left
+                [pos_x + half_size, pos_y - half_size, 0],  # Top-right
+                [pos_x + half_size, pos_y + half_size, 0],  # Bottom-right
+                [pos_x - half_size, pos_y + half_size, 0]   # Bottom-left
+            ], dtype=np.float32)
+
+        # Define surface corners for drawing borders
+        surface_corners_3d = np.array([
+            [0, 0, 0],
+            [width_mm, 0, 0],
+            [width_mm, height_mm, 0],
+            [0, height_mm, 0]
+        ], dtype=np.float32)
+
+        surfaces[surface_name] = {
+            'width': width_mm,
+            'height': height_mm,
+            'marker_3d_points': marker_3d_points,
+            'surface_corners_3d': surface_corners_3d,
+        }
+
+    return surfaces
+
+# Load surface configurations at startup
+surfaces_config = load_markers_config()
 
 async def runcam(record_video=None):
     
@@ -199,128 +214,139 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
         gaze_point = (int(gaze_datum.x), int(gaze_datum.y))
         looked_at_marker = None
         
-        # Estimate surface pose if markers are detected
-        surface_detected = False
+        # Estimate the pose of each configured surface if markers are detected
+        detected_surfaces = []
+        surface_status_lines = []
         if ids is not None:
-            # Collect 3D-2D point correspondences for markers defined in config
-            obj_points_list = []
-            img_points_list = []
-            
-            for i, marker_id in enumerate(ids.flatten()):
-                if marker_id in marker_3d_points:
-                    obj_points_list.append(marker_3d_points[marker_id])
-                    img_points_list.append(corners[i][0])
-            
-            # Need at least one marker to estimate pose
-            if len(obj_points_list) > 0:
+            # Camera model for Pupil Labs Invisible scene camera
+            # Wide-angle camera with significant distortion
+            height, width = bgr_buffer.shape[:2]
+
+            # Reduced focal length for wider FOV (empirically calibrated)
+            # If surface appears 2x too large, halve the focal length
+            focal_length = width * 0.577  # Adjusted for ~120° FOV
+
+            camera_matrix = np.array([
+                [focal_length, 0, width / 2],
+                [0, focal_length, height / 2],
+                [0, 0, 1]
+            ], dtype=np.float32)
+
+            # Add radial distortion coefficients for wide-angle lens
+            # k1 (barrel distortion), k2, p1, p2 (tangential), k3
+            # Negative k1 for typical wide-angle barrel distortion
+            dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
+
+            for surface_name, surface in surfaces_config.items():
+                marker_3d_points = surface['marker_3d_points']
+
+                # Collect 3D-2D point correspondences for this surface's markers
+                obj_points_list = []
+                img_points_list = []
+                for i, marker_id in enumerate(ids.flatten()):
+                    if marker_id in marker_3d_points:
+                        obj_points_list.append(marker_3d_points[marker_id])
+                        img_points_list.append(corners[i][0])
+
+                # Need at least one marker to estimate pose
+                if len(obj_points_list) == 0:
+                    continue
+
                 obj_points = np.vstack(obj_points_list)
                 img_points = np.vstack(img_points_list)
-                
-                # Camera model for Pupil Labs Invisible scene camera
-                # Wide-angle camera with significant distortion
-                height, width = bgr_buffer.shape[:2]
-                
-                # Reduced focal length for wider FOV (empirically calibrated)
-                # If surface appears 2x too large, halve the focal length
-                focal_length = width * 0.577  # Adjusted for ~120° FOV
-                
-                camera_matrix = np.array([
-                    [focal_length, 0, width / 2],
-                    [0, focal_length, height / 2],
-                    [0, 0, 1]
-                ], dtype=np.float32)
-                
-                # Add radial distortion coefficients for wide-angle lens
-                # k1 (barrel distortion), k2, p1, p2 (tangential), k3
-                # Negative k1 for typical wide-angle barrel distortion
-                dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
-                
+
                 # Solve PnP to get rotation and translation vectors
                 success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
-                
-                if success:
-                    surface_detected = True
-                    
-                    # Project surface corners to image
-                    surface_corners_2d, _ = cv2.projectPoints(
-                        surface_corners_3d, rvec, tvec, camera_matrix, dist_coeffs
-                    )
-                    surface_corners_2d = project_to_int_points(surface_corners_2d.reshape(-1, 2))
-                    
-                    # Draw surface border
-                    cv2.polylines(bgr_buffer, [surface_corners_2d], True, (0, 255, 255), 3)
-                    
-                    # Add corner labels
-                    corner_labels = ['TL', 'TR', 'BR', 'BL']
-                    for j, (corner, label) in enumerate(zip(surface_corners_2d, corner_labels)):
-                        cv2.circle(bgr_buffer, to_opencv_point(corner), 8, (0, 255, 255), -1)
-                        cv2.putText(bgr_buffer, label, to_opencv_point(corner + np.array([10, -10])),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                    
-                    # Project gaze point onto surface
-                    # Convert rotation vector to matrix
-                    R, _ = cv2.Rodrigues(rvec)
-                    
-                    # Undistort gaze point
-                    gaze_undistorted = cv2.undistortPoints(
-                        np.array([[gaze_point]], dtype=np.float32),
-                        camera_matrix, dist_coeffs, P=camera_matrix
-                    )[0][0]
-                    
-                    # Create ray in camera coordinates (normalized)
-                    ray_cam = np.array([
-                        (gaze_undistorted[0] - camera_matrix[0, 2]) / camera_matrix[0, 0],
-                        (gaze_undistorted[1] - camera_matrix[1, 2]) / camera_matrix[1, 1],
-                        1.0
-                    ])
-                    
-                    # Transform ray to surface coordinate system
-                    # Surface normal is [0, 0, 1] (pointing up)
-                    # Plane equation: Z = 0
-                    # Ray: P = tvec + t * R^T * ray_cam
-                    # Find t where Z = 0
-                    
-                    ray_surface = R.T @ ray_cam
-                    cam_pos_surface = -R.T @ tvec.flatten()
-                    
-                    # Solve: cam_pos_surface[2] + t * ray_surface[2] = 0
-                    if abs(ray_surface[2]) > 0.001:  # Check ray isn't parallel to surface
-                        t = -cam_pos_surface[2] / ray_surface[2]
-                        
-                        # Calculate intersection point
-                        gaze_surface_3d = cam_pos_surface + t * ray_surface
-                        gaze_surface_x = gaze_surface_3d[0]
-                        gaze_surface_y = gaze_surface_3d[1]
-                        
-                        # Check if gaze is within surface bounds
-                        surface_width = markers_config['surface']['width']
-                        surface_height = markers_config['surface']['height']
-                        
-                        if 0 <= gaze_surface_x <= surface_width and 0 <= gaze_surface_y <= surface_height:
-                            # Project surface gaze point back to image for visualization
-                            gaze_on_surface_3d = np.array([[gaze_surface_x, gaze_surface_y, 0]], dtype=np.float32)
-                            gaze_on_surface_2d, _ = cv2.projectPoints(
-                                gaze_on_surface_3d, rvec, tvec, camera_matrix, dist_coeffs
-                            )
-                            gaze_surface_img = project_to_int_points(gaze_on_surface_2d[0][0])
 
-                            # Draw gaze point on surface with crosshair
-                            cv2.drawMarker(bgr_buffer, to_opencv_point(gaze_surface_img), (255, 255, 0),
-                                         cv2.MARKER_CROSS, 40, 3)
-                            
-                            # Display surface coordinates
-                            coord_text = f"Surface: ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
-                            cv2.putText(bgr_buffer, coord_text,
-                                       (10, 70),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-                            print(coord_text)
-                        else:
-                            # Gaze is outside surface
-                            coord_text = f"Surface: Outside ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
-                            cv2.putText(bgr_buffer, coord_text,
-                                       (10, 70),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (128, 128, 128), 2)
-                            print(coord_text)
+                if not success:
+                    continue
+
+                detected_surfaces.append(surface_name)
+
+                # Project surface corners to image
+                surface_corners_2d, _ = cv2.projectPoints(
+                    surface['surface_corners_3d'], rvec, tvec, camera_matrix, dist_coeffs
+                )
+                surface_corners_2d = project_to_int_points(surface_corners_2d.reshape(-1, 2))
+
+                # Draw surface border
+                cv2.polylines(bgr_buffer, [surface_corners_2d], True, (0, 255, 255), 3)
+
+                # Add corner labels
+                corner_labels = ['TL', 'TR', 'BR', 'BL']
+                for corner, label in zip(surface_corners_2d, corner_labels):
+                    cv2.circle(bgr_buffer, to_opencv_point(corner), 8, (0, 255, 255), -1)
+                    cv2.putText(bgr_buffer, f"{surface_name} {label}", to_opencv_point(corner + np.array([10, -10])),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+                # Project gaze point onto surface
+                # Convert rotation vector to matrix
+                R, _ = cv2.Rodrigues(rvec)
+
+                # Undistort gaze point
+                gaze_undistorted = cv2.undistortPoints(
+                    np.array([[gaze_point]], dtype=np.float32),
+                    camera_matrix, dist_coeffs, P=camera_matrix
+                )[0][0]
+
+                # Create ray in camera coordinates (normalized)
+                ray_cam = np.array([
+                    (gaze_undistorted[0] - camera_matrix[0, 2]) / camera_matrix[0, 0],
+                    (gaze_undistorted[1] - camera_matrix[1, 2]) / camera_matrix[1, 1],
+                    1.0
+                ])
+
+                # Transform ray to surface coordinate system
+                # Surface normal is [0, 0, 1] (pointing up)
+                # Plane equation: Z = 0
+                # Ray: P = tvec + t * R^T * ray_cam
+                # Find t where Z = 0
+
+                ray_surface = R.T @ ray_cam
+                cam_pos_surface = -R.T @ tvec.flatten()
+
+                # Solve: cam_pos_surface[2] + t * ray_surface[2] = 0
+                if abs(ray_surface[2]) <= 0.001:  # Ray is parallel to surface
+                    continue
+
+                t = -cam_pos_surface[2] / ray_surface[2]
+
+                # Calculate intersection point
+                gaze_surface_3d = cam_pos_surface + t * ray_surface
+                gaze_surface_x = gaze_surface_3d[0]
+                gaze_surface_y = gaze_surface_3d[1]
+
+                # Check if gaze is within surface bounds
+                surface_width = surface['width']
+                surface_height = surface['height']
+
+                if 0 <= gaze_surface_x <= surface_width and 0 <= gaze_surface_y <= surface_height:
+                    # Project surface gaze point back to image for visualization
+                    gaze_on_surface_3d = np.array([[gaze_surface_x, gaze_surface_y, 0]], dtype=np.float32)
+                    gaze_on_surface_2d, _ = cv2.projectPoints(
+                        gaze_on_surface_3d, rvec, tvec, camera_matrix, dist_coeffs
+                    )
+                    gaze_surface_img = project_to_int_points(gaze_on_surface_2d[0][0])
+
+                    # Draw gaze point on surface with crosshair
+                    cv2.drawMarker(bgr_buffer, to_opencv_point(gaze_surface_img), (255, 255, 0),
+                                 cv2.MARKER_CROSS, 40, 3)
+
+                    # Display surface coordinates
+                    coord_text = f"{surface_name}: ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
+                    surface_status_lines.append((coord_text, (255, 255, 0)))
+                else:
+                    # Gaze is outside surface
+                    coord_text = f"{surface_name}: Outside ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
+                    surface_status_lines.append((coord_text, (128, 128, 128)))
+
+                print(coord_text)
+
+        # Display surface coordinates, one line per detected surface
+        for i, (coord_text, color) in enumerate(surface_status_lines):
+            cv2.putText(bgr_buffer, coord_text,
+                       (10, 70 + i * 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         
         # Draw detected markers and check gaze
         if ids is not None:
@@ -363,10 +389,10 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
         
         # Display which marker is being looked at
         status_text = f"Looking at: Marker {looked_at_marker}" if looked_at_marker is not None else "Looking at: None"
-        if surface_detected:
-            status_text += " | Surface: Detected"
+        if detected_surfaces:
+            status_text += f" | Surfaces: {', '.join(detected_surfaces)}"
         else:
-            status_text += " | Surface: Not detected"
+            status_text += " | Surfaces: None detected"
         
         cv2.putText(bgr_buffer, status_text, 
                    (10, 30),

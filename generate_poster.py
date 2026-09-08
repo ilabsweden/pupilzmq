@@ -43,20 +43,26 @@ def draw_grid(c, width_mm, height_mm):
     c.setStrokeColorRGB(0, 0, 0)
 
 def create_poster(config_file):
-    """Create poster with ArUco markers from JSON configuration"""
-    
-    # Load configuration
+    """Create one poster per named surface defined in a JSON configuration"""
+
+    # Load configuration: {surface_name: {width, height, markers}, ...}
     config = load_marker_config(config_file)
-    
-    # Get surface dimensions
-    width_mm = config['surface']['width']
-    height_mm = config['surface']['height']
-    markers = config['markers']
-    
-    # Create output filename based on input filename
     base_name = os.path.splitext(config_file)[0]
-    pdf_filename = f"{base_name}.pdf"
-    
+
+    for surface_name, surface in config.items():
+        create_surface_poster(base_name, surface_name, surface)
+
+def create_surface_poster(base_name, surface_name, surface):
+    """Create a PDF poster with ArUco markers for a single surface"""
+
+    # Get surface dimensions
+    width_mm = surface['width']
+    height_mm = surface['height']
+    markers = surface['markers']
+
+    # Create output filename based on input filename and surface name
+    pdf_filename = f"{base_name}_{surface_name}.pdf"
+
     # Create PDF with custom size
     # ReportLab uses points (1/72 inch), convert mm to points
     width_pts = width_mm * mm
@@ -107,7 +113,7 @@ def create_poster(config_file):
         if os.path.exists(temp_file):
             os.remove(temp_file)
     
-    print(f"Poster saved to {pdf_filename}")
+    print(f"Poster for surface '{surface_name}' saved to {pdf_filename}")
     print(f"Size: {width_mm}mm × {height_mm}mm")
     print(f"Markers: {len(markers)} total")
     for marker in markers:

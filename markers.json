@@ -1,24 +1,24 @@
 {
-  "surface": {
+  "Surface": {
     "width": 500,
-    "height": 500
-  },
-  "markers": [
-    {
-      "id": 0,
-      "size": 100,
-      "position": {
-        "x": 50,
-        "y": 50
+    "height": 500,
+    "markers": [
+      {
+        "id": 0,
+        "size": 100,
+        "position": {
+          "x": 50,
+          "y": 50
+        }
+      },
+      {
+        "id": 1,
+        "size": 100,
+        "position": {
+          "x": 250,
+          "y": 250
+        }
       }
-    },
-    {
-      "id": 1,
-      "size": 100,
-      "position": {
-        "x": 250,
-        "y": 250
-      }
-    }
-  ]
+    ]
+  }
 }
