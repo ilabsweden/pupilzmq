@@ -76,7 +76,7 @@ def project_to_int_points(points):
     return clamped.astype(int)
 
 
-def solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs):
+def solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs, ambiguity_ratio=1.5):
     """Solve a coplanar point set's pose, keeping the lower-error candidate.
 
     All our surface markers lie in a single Z=0 plane, so correspondences are
@@ -88,6 +88,16 @@ def solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs):
     converge to either one. SOLVEPNP_IPPE derives both candidates explicitly,
     so we can pick whichever one actually reprojects better instead of
     trusting an unchecked initial guess.
+
+    When the two candidates' errors are within `ambiguity_ratio` of each
+    other, the fit doesn't actually distinguish which one is right -- report
+    no pose (success=False) rather than commit to what's effectively a coin
+    flip. Empirically (synthetic tests, single-marker case) this cleanly
+    eliminates wrong picks when markers have reasonable size/tilt, at a
+    rejection cost of ~1% of frames; for a very small/distant/near-fronto
+    single marker the two candidates can stay close in error regardless of
+    which is correct, and no reprojection-error-based check can resolve
+    that -- it would need temporal continuity across frames instead.
     """
     success, rvecs, tvecs, errors = cv2.solvePnPGeneric(
         obj_points, img_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_IPPE
@@ -95,7 +105,14 @@ def solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs):
     if not success:
         return cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
 
-    best = int(np.argmin(errors))
+    errors = np.asarray(errors).reshape(-1)
+    order = np.argsort(errors)
+    best = order[0]
+
+    if len(order) > 1 and errors[best] > 1e-9 and errors[order[1]] / errors[best] < ambiguity_ratio:
+        # Too close to call -- refuse to guess rather than risk a flip.
+        return False, None, None
+
     return True, rvecs[best], tvecs[best]
 
 
