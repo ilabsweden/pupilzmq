@@ -11,6 +11,8 @@ import argparse, os
 from datetime import datetime
 import numpy as np
 import json
+import zmq
+import zmq.asyncio
 
 from pupil_labs.realtime_api import (
     Device,
@@ -127,8 +129,13 @@ def load_markers_config(config_file='markers_a0.json'):
 # Load surface configurations at startup
 surfaces_config = load_markers_config()
 
-async def runcam(record_video=None):
-    
+async def runcam(record_video=None, pub_address='tcp://*:5556', topic='pupil/gaze'):
+    zmq_ctx = zmq.asyncio.Context()
+    pub = zmq_ctx.socket(zmq.PUB)
+    pub.bind(pub_address)
+    topic = topic.encode('utf8')
+    print(f"Publishing gaze coordinates on {pub_address}, topic: {topic.decode('utf8')}")
+
     async with Network() as network:
         dev_info = await network.wait_for_new_device(timeout_seconds=5)
 
@@ -170,11 +177,12 @@ async def runcam(record_video=None):
         )
 
         try:
-            await match_and_draw(queue_video, queue_gaze, record_video)
+            await match_and_draw(queue_video, queue_gaze, record_video, pub, topic)
 
         finally:
             process_video.cancel()
             process_gaze.cancel()
+            pub.close()
 
 async def enqueue_sensor_data(sensor: T.AsyncIterator, queue: asyncio.Queue) -> None:
 
@@ -185,7 +193,7 @@ async def enqueue_sensor_data(sensor: T.AsyncIterator, queue: asyncio.Queue) -> 
         except asyncio.QueueFull:
             print(f"Queue is full, dropping {datum}")
 
-async def match_and_draw(queue_video, queue_gaze, record_video=None):
+async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, topic=b'pupil/gaze'):
     video_writer = None
     
     # Initialize video writer if recording video
@@ -217,6 +225,7 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
         # Estimate the pose of each configured surface if markers are detected
         detected_surfaces = []
         surface_status_lines = []
+        surface_coords = {}
         if ids is not None:
             # Camera model for Pupil Labs Invisible scene camera
             # Wide-angle camera with significant distortion
@@ -315,6 +324,7 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
                 gaze_surface_3d = cam_pos_surface + t * ray_surface
                 gaze_surface_x = gaze_surface_3d[0]
                 gaze_surface_y = gaze_surface_3d[1]
+                surface_coords[surface_name] = (gaze_surface_x, gaze_surface_y)
 
                 # Check if gaze is within surface bounds
                 surface_width = surface['width']
@@ -347,7 +357,15 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
             cv2.putText(bgr_buffer, coord_text,
                        (10, 70 + i * 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        
+
+        # Publish camera- and surface-centered gaze coordinates
+        if pub is not None:
+            gaze_message = {"camera": {"x": float(gaze_point[0]), "y": float(gaze_point[1])}}
+            for surface_name in surfaces_config:
+                x, y = surface_coords.get(surface_name, (0.0, 0.0))
+                gaze_message[surface_name] = {"x": float(x), "y": float(y)}
+            await pub.send_multipart([topic, json.dumps(gaze_message).encode('utf8')])
+
         # Draw detected markers and check gaze
         if ids is not None:
             marker_ids = normalize_marker_ids(ids)
@@ -453,10 +471,12 @@ def main():
                     description='Display Pupil Labs invisible video feed with eye-gaze',
                     epilog='See README.md for usage.')
     parser.add_argument('-r', '--record-video', type=str, help='record displayed video to file (e.g., myrecording.mp4)')
+    parser.add_argument('-a', '--pub-address', type=str, default='tcp://*:5556', help='ZMQ address to bind the gaze coordinate pub socket to')
+    parser.add_argument('-t', '--topic', type=str, default='pupil/gaze', help='ZMQ topic on which gaze coordinates are published')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(runcam(record_video=args.record_video))
+        asyncio.run(runcam(record_video=args.record_video, pub_address=args.pub_address, topic=args.topic))
 
 if __name__ == "__main__":
     main()

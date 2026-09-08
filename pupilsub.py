@@ -1,4 +1,4 @@
-"""Minimal reference implementation of a subscriber to eye-gaze data from pupilpub. 
+"""Minimal reference implementation of a subscriber to eye-gaze data from pupiltrack.
 """
 
 import asyncio
@@ -20,22 +20,24 @@ async def runsub(address,topic):
     try:
         while True:
             t, msg = await sub.recv_multipart()
-            print('Received topic {}:'.format(t.decode('utf8')),json.loads(msg))
+            gaze = json.loads(msg)
+            coords = ', '.join(f"{name}=({point['x']:.1f}, {point['y']:.1f})" for name, point in gaze.items())
+            print(f"[{t.decode('utf8')}] {coords}")
 
     except KeyboardInterrupt:
         pass
 
 def main():
     parser = argparse.ArgumentParser(
-                    prog='Pupil Labs ZMQ publisher',
-                    description='Expose Pupil Labs invisible eye-gaze data on ZMQ pub socket',
+                    prog='Pupil Labs ZMQ subscriber',
+                    description='Receive camera- and surface-centered eye-gaze coordinates published by pupiltrack',
                     epilog='See README.md for usage.')
-    parser.add_argument('address',help='specifies the address:port to connect to',default='localhost:5555',nargs='?')
+    parser.add_argument('address',help='specifies the address:port to connect to',default='localhost:5556',nargs='?')
     parser.add_argument('-t','--topic',help='the zmq topic on which events are published',default='pupil/gaze')
 
     args = parser.parse_args()
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(runsub('tcp://' + args,args.topic))
+        asyncio.run(runsub('tcp://' + args.address,args.topic))
 
 if __name__ == "__main__":
     main()
