@@ -92,7 +92,8 @@ def load_markers_config(config_file='markers_a0.json'):
 
         # Build 3D object points for each marker in the surface coordinate system
         # Origin is top-left corner of surface, Y axis points down, X axis points right
-        marker_3d_points = {}
+        marker_ids = []
+        marker_obj_points = []
         for marker in surface['markers']:
             marker_id = marker['id']
             size_mm = marker['size']
@@ -102,12 +103,19 @@ def load_markers_config(config_file='markers_a0.json'):
             # Define the 4 corners of the marker in 3D (Z=0, planar surface)
             # Marker is centered at position
             half_size = size_mm / 2.0
-            marker_3d_points[marker_id] = np.array([
+            marker_ids.append(marker_id)
+            marker_obj_points.append(np.array([
                 [pos_x - half_size, pos_y - half_size, 0],  # Top-left
                 [pos_x + half_size, pos_y - half_size, 0],  # Top-right
                 [pos_x + half_size, pos_y + half_size, 0],  # Bottom-right
                 [pos_x - half_size, pos_y + half_size, 0]   # Bottom-left
-            ], dtype=np.float32)
+            ], dtype=np.float32))
+
+        # ArUco board: lets us estimate the surface pose from whichever subset
+        # of its markers is currently visible, using OpenCV's own (and
+        # better-tested) marker-to-point matching instead of hand-rolled
+        # correspondence bookkeeping.
+        board = cv2.aruco.Board(marker_obj_points, aruco_dict, np.array(marker_ids, dtype=np.int32))
 
         # Define surface corners for drawing borders
         surface_corners_3d = np.array([
@@ -120,7 +128,7 @@ def load_markers_config(config_file='markers_a0.json'):
         surfaces[surface_name] = {
             'width': width_mm,
             'height': height_mm,
-            'marker_3d_points': marker_3d_points,
+            'board': board,
             'surface_corners_3d': surface_corners_3d,
         }
 
@@ -247,22 +255,13 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, t
             dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
 
             for surface_name, surface in surfaces_config.items():
-                marker_3d_points = surface['marker_3d_points']
-
-                # Collect 3D-2D point correspondences for this surface's markers
-                obj_points_list = []
-                img_points_list = []
-                for i, marker_id in enumerate(ids.flatten()):
-                    if marker_id in marker_3d_points:
-                        obj_points_list.append(marker_3d_points[marker_id])
-                        img_points_list.append(corners[i][0])
+                # Match this surface's board against whichever markers are
+                # visible this frame (any subset, in any order)
+                obj_points, img_points = surface['board'].matchImagePoints(corners, ids)
 
                 # Need at least one marker to estimate pose
-                if len(obj_points_list) == 0:
+                if obj_points is None or len(obj_points) == 0:
                     continue
-
-                obj_points = np.vstack(obj_points_list)
-                img_points = np.vstack(img_points_list)
 
                 # Solve PnP to get rotation and translation vectors
                 success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
@@ -349,8 +348,6 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, t
                     # Gaze is outside surface
                     coord_text = f"{surface_name}: Outside ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
                     surface_status_lines.append((coord_text, (128, 128, 128)))
-
-                print(coord_text)
 
         # Display surface coordinates, one line per detected surface
         for i, (coord_text, color) in enumerate(surface_status_lines):
