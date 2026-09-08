@@ -313,12 +313,14 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None):
                             cv2.putText(bgr_buffer, coord_text,
                                        (10, 70),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+                            print(coord_text)
                         else:
                             # Gaze is outside surface
                             coord_text = f"Surface: Outside ({gaze_surface_x:.1f}, {gaze_surface_y:.1f}) mm"
                             cv2.putText(bgr_buffer, coord_text,
                                        (10, 70),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (128, 128, 128), 2)
+                            print(coord_text)
         
         # Draw detected markers and check gaze
         if ids is not None:
