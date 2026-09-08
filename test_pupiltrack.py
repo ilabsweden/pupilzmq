@@ -8,6 +8,7 @@ import numpy as np
 pupil_labs_module = types.ModuleType('pupil_labs')
 realtime_api_module = types.ModuleType('pupil_labs.realtime_api')
 realtime_api_module.Device = object
+realtime_api_module.DeviceError = Exception
 realtime_api_module.Network = object
 realtime_api_module.receive_gaze_data = lambda *args, **kwargs: None
 realtime_api_module.receive_video_frames = lambda *args, **kwargs: None

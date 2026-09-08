@@ -16,6 +16,7 @@ import zmq.asyncio
 
 from pupil_labs.realtime_api import (
     Device,
+    DeviceError,
     Network,
     receive_gaze_data,
     receive_video_frames,
@@ -73,6 +74,29 @@ def project_to_int_points(points):
     """
     clamped = np.clip(np.nan_to_num(points), -_MAX_POINT_COORD, _MAX_POINT_COORD)
     return clamped.astype(int)
+
+
+def solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs):
+    """Solve a coplanar point set's pose, keeping the lower-error candidate.
+
+    All our surface markers lie in a single Z=0 plane, so correspondences are
+    always coplanar. A coplanar point set admits two algebraically valid
+    poses -- the true one and one mirrored across the viewing ray -- with
+    near-identical reprojection error when the visible markers are few,
+    small, or nearly fronto-parallel. SOLVEPNP_ITERATIVE (the solvePnP
+    default) refines from a single internal initial guess and can silently
+    converge to either one. SOLVEPNP_IPPE derives both candidates explicitly,
+    so we can pick whichever one actually reprojects better instead of
+    trusting an unchecked initial guess.
+    """
+    success, rvecs, tvecs, errors = cv2.solvePnPGeneric(
+        obj_points, img_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_IPPE
+    )
+    if not success:
+        return cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+
+    best = int(np.argmin(errors))
+    return True, rvecs[best], tvecs[best]
 
 
 def load_markers_config(config_file='markers_a0.json'):
@@ -166,6 +190,20 @@ async def runcam(record_video=None, pub_address='tcp://*:5556', topic='pupil/gaz
             print(f"Scene camera is not connected to {device}")
             return
 
+        # Use the scene camera's real factory calibration when available,
+        # instead of an approximate hand-tuned camera model: an inaccurate
+        # camera model biases pose estimation systematically, which is most
+        # damaging with few markers visible (little redundancy to average it
+        # out) and is a likely cause of surface poses coming out badly wrong.
+        camera_matrix = None
+        dist_coeffs = None
+        try:
+            calibration = await device.get_calibration()
+            camera_matrix = calibration.scene_camera_matrix.astype(np.float32)
+            dist_coeffs = calibration.scene_distortion_coefficients.astype(np.float32).reshape(1, -1)
+            print(f"Using scene camera calibration from device (serial {calibration.serial})")
+        except DeviceError as e:
+            print(f"Could not fetch scene camera calibration ({e}); falling back to an approximate camera model")
 
         restart_on_disconnect = True
         queue_video = asyncio.Queue()
@@ -185,7 +223,8 @@ async def runcam(record_video=None, pub_address='tcp://*:5556', topic='pupil/gaz
         )
 
         try:
-            await match_and_draw(queue_video, queue_gaze, record_video, pub, topic)
+            await match_and_draw(queue_video, queue_gaze, record_video, pub, topic,
+                                  camera_matrix, dist_coeffs)
 
         finally:
             process_video.cancel()
@@ -201,7 +240,8 @@ async def enqueue_sensor_data(sensor: T.AsyncIterator, queue: asyncio.Queue) -> 
         except asyncio.QueueFull:
             print(f"Queue is full, dropping {datum}")
 
-async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, topic=b'pupil/gaze'):
+async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, topic=b'pupil/gaze',
+                          camera_matrix=None, dist_coeffs=None):
     video_writer = None
     
     # Initialize video writer if recording video
@@ -235,24 +275,19 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, t
         surface_status_lines = []
         surface_coords = {}
         if ids is not None:
-            # Camera model for Pupil Labs Invisible scene camera
-            # Wide-angle camera with significant distortion
-            height, width = bgr_buffer.shape[:2]
-
-            # Reduced focal length for wider FOV (empirically calibrated)
-            # If surface appears 2x too large, halve the focal length
-            focal_length = width * 0.577  # Adjusted for ~120° FOV
-
-            camera_matrix = np.array([
-                [focal_length, 0, width / 2],
-                [0, focal_length, height / 2],
-                [0, 0, 1]
-            ], dtype=np.float32)
-
-            # Add radial distortion coefficients for wide-angle lens
-            # k1 (barrel distortion), k2, p1, p2 (tangential), k3
-            # Negative k1 for typical wide-angle barrel distortion
-            dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
+            if camera_matrix is None or dist_coeffs is None:
+                # No device calibration available: fall back to an approximate
+                # camera model for the Pupil Labs Neon scene camera (wide-angle
+                # lens, significant distortion). Cached in the camera_matrix/
+                # dist_coeffs locals so this only runs once per session.
+                height, width = bgr_buffer.shape[:2]
+                focal_length = width * 0.577  # Adjusted for ~120° FOV
+                camera_matrix = np.array([
+                    [focal_length, 0, width / 2],
+                    [0, focal_length, height / 2],
+                    [0, 0, 1]
+                ], dtype=np.float32)
+                dist_coeffs = np.array([[-0.2, 0.1, 0, 0, 0]], dtype=np.float32)
 
             for surface_name, surface in surfaces_config.items():
                 # Match this surface's board against whichever markers are
@@ -264,7 +299,7 @@ async def match_and_draw(queue_video, queue_gaze, record_video=None, pub=None, t
                     continue
 
                 # Solve PnP to get rotation and translation vectors
-                success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+                success, rvec, tvec = solve_coplanar_pose(obj_points, img_points, camera_matrix, dist_coeffs)
 
                 if not success:
                     continue
