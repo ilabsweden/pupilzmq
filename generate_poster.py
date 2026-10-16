@@ -42,6 +42,30 @@ def draw_grid(c, width_mm, height_mm):
     # Reset stroke color to black for subsequent drawing
     c.setStrokeColorRGB(0, 0, 0)
 
+def draw_axes(c, width_mm, height_mm):
+    """Draw tick marks and cm labels along the bottom and left edges, every 10 cm"""
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setFillColorRGB(0, 0, 0)
+    c.setLineWidth(0.75)
+    c.setFont("Helvetica", 8)
+
+    tick_len = 3 * mm
+    interval_mm = 100  # 10 cm
+
+    # Horizontal axis: ticks and cm labels along the bottom edge
+    for x_mm in range(0, int(width_mm) + 1, interval_mm):
+        x_pts = x_mm * mm
+        label = str(x_mm // 10)
+        c.line(x_pts, 0, x_pts, tick_len)
+        c.drawCentredString(x_pts, tick_len + 1 * mm, label)
+
+    # Vertical axis: ticks and cm labels along the left edge
+    for y_mm in range(0, int(height_mm) + 1, interval_mm):
+        y_pts = y_mm * mm
+        label = str(y_mm // 10)
+        c.line(0, y_pts, tick_len, y_pts)
+        c.drawString(tick_len + 1 * mm, y_pts - 2.5, label)
+
 def create_poster(config_file):
     """Create one poster per named surface defined in a JSON configuration"""
 
@@ -72,7 +96,10 @@ def create_surface_poster(base_name, surface_name, surface):
     
     # Draw grid pattern
     draw_grid(c, width_mm, height_mm)
-    
+
+    # Draw axis ticks and cm labels
+    draw_axes(c, width_mm, height_mm)
+
     # Keep track of temporary files for cleanup
     temp_files = []
     
