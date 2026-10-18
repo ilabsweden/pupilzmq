@@ -66,6 +66,18 @@ def draw_axes(c, width_mm, height_mm):
         c.line(0, y_pts, tick_len, y_pts)
         c.drawString(tick_len + 1 * mm, y_pts - 2.5, label)
 
+def draw_center_marker(c, x_mm=600, y_mm=420, size_mm=20):
+    """Draw a crosshair marking a fixed reference point on the poster"""
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setLineWidth(1)
+
+    x_pts = x_mm * mm
+    y_pts = y_mm * mm
+    half = size_mm / 2 * mm
+
+    c.line(x_pts - half, y_pts, x_pts + half, y_pts)
+    c.line(x_pts, y_pts - half, x_pts, y_pts + half)
+
 def create_poster(config_file):
     """Create one poster per named surface defined in a JSON configuration"""
 
@@ -99,6 +111,9 @@ def create_surface_poster(base_name, surface_name, surface):
 
     # Draw axis ticks and cm labels
     draw_axes(c, width_mm, height_mm)
+
+    # Draw center reference marker
+    draw_center_marker(c)
 
     # Keep track of temporary files for cleanup
     temp_files = []
